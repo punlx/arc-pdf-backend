@@ -1,8 +1,8 @@
-# ArcFusion Take-Home Assignment: Frontend/Fullstack
+# ArcFusion Take-Home Assignment: Frontend
 
 ## Objective
 
-Build a production-ready frontend application that enables users to upload PDFs and ask questions about their content via an API. The focus is on component architecture, state management, styling, and frontend code quality — not on the LLM or AI logic itself.
+Build a production-ready frontend application that enables users to upload PDFs and ask questions about their content via an API. The focus is on component architecture, state management, styling, and frontend code quality — not on the LLM or AI logic itself. The chat response from the backend will be mocked. You are expected to only do frontend development.
 
 ## Requirements
 
@@ -27,13 +27,6 @@ Frontend Stack
 - Memory Indicator
 - Show whether the current session has memory (e.g., simple badge or toggle)
 
-## API Integration
-
-- Assume the following API structure:
-  - POST /api/upload // Uploads PDFs
-  - POST /api/chat // { question: string } => { answer: string, source: string }
-  - POST /api/reset // Clears chat memory
-
 ## Bonus Points
 
 - Component-driven development (with Storybook)
@@ -41,7 +34,6 @@ Frontend Stack
 - Responsive design across mobile/tablet/desktop
 - Accessibility (WAI-ARIA)
 - Visual regression testing setup (Chromatic or similar)
-- Docker + docker-compose setup for easy run
 - Websocket integration for chat api
 
 ## Deliverables
@@ -50,16 +42,17 @@ Git Repository
 
 - Source code
 - Component folder structure clearly organized
+- Docker + docker-compose setup for easy run
 
 README.md containing:
 
-- How to run it locally
+- How to run it locally using `docker-compose.yml`
 - Project structure and component breakdown
 - Any tradeoffs or assumptions made
 - What you would do to improve in a real-world scenario
   Optional: Short Loom/video walkthrough explaining the project
 
-# What We're Evaluating
+## What We're Evaluating
 
 Category What We Look For
 
@@ -70,34 +63,19 @@ Category What We Look For
 - Styling & Theming Tailwind conventions, consistent visual system
 - Code Quality TypeScript use, folder structure, code readability
 - UX Attention Thoughtful interactions, loading/error handling
-- Ownership Mindset README clarity, polish, and
+- Ownership Mindset README clarity, polish, and documentation
 
 ## Backend Setup (For Candidates)
 
 A FastAPI backend has been provided for this take-home test. Follow these steps to set it up:
 
-### Option 1: Using Docker (Recommended)
+### Using Docker
 
 ```bash
-# Start the backend service
-docker-compose up backend
+docker compose -f docker/docker-compose.yml up --build
 
 # The API will be available at http://localhost:8000
 # API Documentation: http://localhost:8000/docs
-```
-
-### Option 2: Local Development
-
-```bash
-# Make the run script executable (first time only)
-chmod +x run_backend.sh
-
-# Run the backend
-./run_backend.sh
-
-# Or manually:
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Available Endpoints
@@ -130,7 +108,8 @@ Once the backend is running, visit:
 
 ### Frontend Integration
 
-The backend supports CORS and is configured to work with frontend applications running on ports 3000-3001. Example API calls:
+The backend is configured to work with frontend applications.
+Visit the docs for more detailed response schemas.
 
 ```javascript
 // Upload files
