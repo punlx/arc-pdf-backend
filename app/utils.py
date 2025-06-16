@@ -97,10 +97,6 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
 
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        """Send a personal message to a specific WebSocket connection"""
-        await websocket.send_text(message)
-
 
 def mock_pdf_qa(question: str, uploaded_files: List[Dict]) -> tuple[str, str]:
     """

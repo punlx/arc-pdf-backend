@@ -72,7 +72,7 @@ A FastAPI backend has been provided for this take-home test. Follow these steps 
 ### Using Docker
 
 ```bash
-docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker-compose.yml up --build
 
 # The API will be available at http://localhost:8000
 # API Documentation: http://localhost:8000/docs

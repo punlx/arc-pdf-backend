@@ -12,7 +12,6 @@ async def test_websocket_basic_chat():
 
     try:
         async with websockets.connect(WS_URL) as websocket:
-            # Send a question
             question_data = {
                 "question": "What are the key contributions of the text-to-SQL research papers?"
             }
@@ -20,7 +19,6 @@ async def test_websocket_basic_chat():
             await websocket.send(json.dumps(question_data))
             print(f"📤 Sent: {question_data['question']}")
 
-            # Collect all responses
             responses = []
             complete_response = None
 
