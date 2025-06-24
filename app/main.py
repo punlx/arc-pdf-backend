@@ -6,11 +6,13 @@ from typing import List
 
 from fastapi import (
     FastAPI,
+    UploadFile,
     File,
     HTTPException,
-    UploadFile,
     WebSocket,
     WebSocketDisconnect,
+    Query,
+    Path,
 )
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -60,57 +62,72 @@ async def get_status():
     )
 
 
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 @app.post("/api/upload", response_model=UploadResponse)
-async def upload_files(files: List[UploadFile] = File(...)):
-    """Upload PDF files"""
+async def upload_files(
+    chat_id: str = Query(..., description="Target chat_id (session)"),
+    files: List[UploadFile] = File(...),
+):
     if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
+        raise HTTPException(400, "No files provided")
 
-    uploaded_files_info = []
+    # Create session on-the-fly if not exist
+    if chat_id not in memory.chat_history:
+        (
+            memory.create_chat()
+            if chat_id is None
+            else memory.chat_history.setdefault(chat_id, [])
+        )
+        memory.uploaded_files.setdefault(chat_id, [])
 
+    uploaded_infos = []
     for file in files:
-        # Validate file type (basic check)
         if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(
-                status_code=400, detail=f"File {file.filename} is not a PDF"
-            )
-
-        # Read file content (in real implementation, you'd process/store this)
+            raise HTTPException(400, f"{file.filename} is not a PDF")
         content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(413, f"{file.filename} exceeds 10 MB")
 
-        file_info = {
+        info = {
             "filename": file.filename,
             "size": len(content),
             "upload_time": datetime.now().isoformat(),
             "id": str(uuid.uuid4()),
         }
+        uploaded_infos.append(info)
 
-        uploaded_files_info.append(file_info)
-        memory.uploaded_files.append(file_info)
+    memory.add_files(chat_id, uploaded_infos)
 
     return UploadResponse(
-        message=f"Successfully uploaded {len(files)} file(s)", files=uploaded_files_info
+        message=f"Uploaded {len(uploaded_infos)} file(s)",
+        files=uploaded_infos,
     )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Ask a question about uploaded documents"""
     if not request.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
+        raise HTTPException(400, "Question cannot be empty")
 
-    # Generate mock answer
-    answer, source = mock_pdf_qa(request.question, memory.uploaded_files)
+    # 1) เตรียม chat_id (สร้างใหม่ถ้าไม่ส่งมา)
+    chat_id = request.chat_id or memory.create_chat()
 
-    # Store in memory
-    chat_entry = memory.add_chat(request.question, answer, source, request.chat_id)
+    # 2) ไฟล์เฉพาะ session
+    files_in_session = memory.get_files(chat_id)
 
+    # 3) mock QA
+    answer, source = mock_pdf_qa(request.question, files_in_session)
+
+    # 4) บันทึก & ตอบกลับ
+    chat_entry = memory.add_chat(request.question, answer, source, chat_id)
     return ChatResponse(
         answer=answer,
         source=source,
         id=chat_entry["id"],
         timestamp=chat_entry["timestamp"],
-        chat_id=chat_entry["chat_id"],
+        chat_id=chat_id,
     )
 
 
@@ -125,14 +142,21 @@ async def create_chat():
 
 @app.post("/api/reset", response_model=ResetResponse)
 async def reset_session(request: ResetRequest = ResetRequest()):
-    """Reset the chat session and clear memory"""
+    """
+    Reset the chat session.
+    - ถ้าส่ง chat_id → ลบเฉพาะแชตนั้น
+    - ถ้าไม่ส่ง → ลบทุกแชต + ลบไฟล์
+    """
     chat_id = request.chat_id if request else None
-    memory.reset(chat_id)
+    clear_files = chat_id is None  # ลบไฟล์เฉพาะกรณี full reset
 
-    if chat_id:
-        message = f"Chat {chat_id} reset successfully"
-    else:
-        message = "All chats reset successfully"
+    memory.reset(chat_id, clear_files=clear_files)  # 🆕 ส่ง flag เข้าไป
+
+    message = (
+        f"Chat {chat_id} reset successfully"
+        if chat_id
+        else "All chats and files reset successfully"
+    )
 
     return ResetResponse(message=message, session_id=memory.session_id, chat_id=chat_id)
 
@@ -140,6 +164,7 @@ async def reset_session(request: ResetRequest = ResetRequest()):
 @app.get("/api/chat/{chat_id}", response_model=ChatHistoryResponse)
 async def get_chat_history(chat_id: str):
     """Get chat history for a specific chat ID"""
+    memory.touch_chat(chat_id)
     messages = memory.get_chat_history(chat_id)
 
     if not messages and chat_id not in memory.chat_history:
@@ -152,13 +177,13 @@ async def get_chat_history(chat_id: str):
 
 @app.get("/api/chat", response_model=AllChatsResponse)
 async def get_all_chats():
-    """Get summary of all chat sessions"""
     all_chats = memory.get_all_chats()
     chat_summaries = []
 
     for chat_id, messages in all_chats.items():
         first_question = messages[0]["question"] if messages else None
         last_message_time = messages[-1]["timestamp"] if messages else None
+        last_active_time = memory.chat_last_active.get(chat_id, last_message_time)
 
         chat_summaries.append(
             ChatSummary(
@@ -166,8 +191,12 @@ async def get_all_chats():
                 message_count=len(messages),
                 first_question=first_question,
                 last_message_time=last_message_time,
+                last_active_time=last_active_time,  # 🆕
             )
         )
+
+    # ----- เรียงตาม last_active_time DESC -----
+    chat_summaries.sort(key=lambda c: c.last_active_time or "", reverse=True)
 
     return AllChatsResponse(
         chats=chat_summaries,
@@ -177,30 +206,26 @@ async def get_all_chats():
 
 
 @app.get("/api/files", response_model=FilesResponse)
-async def get_files():
-    """Get all uploaded files information"""
-    total_size = sum(file_info.get("size", 0) for file_info in memory.uploaded_files)
-
-    return FilesResponse(
-        files=memory.uploaded_files,
-        total_files=len(memory.uploaded_files),
-        total_size_bytes=total_size,
-    )
+async def get_files(chat_id: str = Query(..., description="chat_id of session")):
+    files = memory.get_files(chat_id)
+    total = len(files)
+    size = sum(f.get("size", 0) for f in files)
+    return FilesResponse(files=files, total_files=total, total_size_bytes=size)
 
 
 @app.websocket("/api/ws/chat")
 async def websocket_chat(websocket: WebSocket):
-    """WebSocket endpoint for streaming chat responses"""
+    """WebSocket endpoint for streaming chat responses (session-aware)"""
     await manager.connect(websocket)
 
     try:
         while True:
-            # Receive question from client
-            data = await websocket.receive_text()
+            # ─── 1. รับข้อความจาก client ───
+            raw = await websocket.receive_text()
 
             try:
-                request_data = json.loads(data)
-                question = request_data.get("question", "").strip()
+                payload = json.loads(raw)
+                question = payload.get("question", "").strip()
 
                 if not question:
                     await websocket.send_json(
@@ -208,56 +233,53 @@ async def websocket_chat(websocket: WebSocket):
                     )
                     continue
 
-                # Send typing indicator
+                # ─── 2. ระบุ / สร้าง chat_id ───
+                chat_id: str | None = payload.get("chat_id")
+                if not chat_id:
+                    chat_id = memory.create_chat()  # สร้าง session ใหม่
+
+                # ─── 3. ไฟล์เฉพาะ session ───
+                files_in_session = memory.get_files(chat_id)
+
+                # ─── 4. ส่ง typing indicator ───
                 await websocket.send_json(
                     {"type": "typing", "message": "Analyzing documents..."}
                 )
 
-                # Simulate streaming response by sending chunks
-                answer, source = mock_pdf_qa(question, memory.uploaded_files)
-
-                # Split answer into chunks for streaming effect
+                # ─── 5. สร้างคำตอบ & ตัดเป็น chunk ───
+                answer, source = mock_pdf_qa(question, files_in_session)
                 words = answer.split()
-                chunks = []
-                chunk_size = 3  # Words per chunk
+                chunk_size = 3
+                full_resp = ""
 
                 for i in range(0, len(words), chunk_size):
-                    chunk = " ".join(words[i : i + chunk_size])
-                    chunks.append(chunk)
-
-                # Send each chunk with a small delay
-                full_response = ""
-                for i, chunk in enumerate(chunks):
-                    full_response += chunk + " "
+                    chunk = " ".join(words[i : i + chunk_size]) + " "
+                    full_resp += chunk
 
                     await websocket.send_json(
                         {
                             "type": "chunk",
-                            "content": chunk + " ",
-                            "is_final": i == len(chunks) - 1,
+                            "content": chunk,
+                            "is_final": i + chunk_size >= len(words),
                         }
                     )
+                    await asyncio.sleep(0.1)  # streaming effect
 
-                    # Small delay for streaming effect
-                    await asyncio.sleep(0.1)
-
-                # Get chat_id from request or create new one
-                chat_id = request_data.get("chat_id")
-
-                # Store in memory and send final response
+                # ─── 6. บันทึกประวัติ ───
                 chat_entry = memory.add_chat(
-                    question, full_response.strip(), source, chat_id
+                    question, full_resp.strip(), source, chat_id
                 )
 
+                # ─── 7. ส่ง complete ───
                 await websocket.send_json(
                     {
                         "type": "complete",
                         "id": chat_entry["id"],
                         "question": question,
-                        "answer": full_response.strip(),
+                        "answer": full_resp.strip(),
                         "source": source,
                         "timestamp": chat_entry["timestamp"],
-                        "chat_id": chat_entry["chat_id"],
+                        "chat_id": chat_id,
                     }
                 )
 
@@ -288,3 +310,30 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
+
+@app.delete("/api/files/{file_id}")
+async def delete_file(chat_id: str = Query(...), file_id: str = Path(...)):
+    if chat_id not in memory.uploaded_files:
+        raise HTTPException(404, "chat_id not found")
+    memory.delete_file(chat_id, file_id)
+    return {"message": "File deleted"}
+
+
+@app.delete("/api/files")
+async def delete_all_files(chat_id: str = Query(...)):
+    """
+    Delete **all** PDF files in the given chat session
+    """
+    if chat_id not in memory.uploaded_files:
+        raise HTTPException(404, f"chat_id {chat_id} not found")
+
+    memory.clear_files(chat_id)
+    return {"message": "All files deleted"}
+
+
+@app.post("/api/reset", response_model=ResetResponse)
+async def reset_session(req: ResetRequest = ResetRequest()):
+    memory.reset(req.chat_id, clear_files=True if req.chat_id is None else False)
+    msg = f"Chat {req.chat_id} reset" if req.chat_id else "All chats reset"
+    return ResetResponse(message=msg, session_id=memory.session_id, chat_id=req.chat_id)

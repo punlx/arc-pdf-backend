@@ -7,24 +7,32 @@ from fastapi import WebSocket
 
 
 class MemoryStore:
-    """Global memory storage for uploaded files and chat history"""
+    """
+    Global in-memory storage
+    - uploaded_files  -> Dict[chat_id, List[fileMeta]]
+    - chat_history    -> Dict[chat_id, List[message]]
+    """
 
     def __init__(self):
-        self.uploaded_files: List[Dict[str, Any]] = []
+        self.uploaded_files: Dict[str, List[Dict[str, Any]]] = {}
         self.chat_history: Dict[str, List[Dict[str, Any]]] = {}
-        self.has_memory: bool = False
-        self.session_id: str = str(uuid.uuid4())
+        self.chat_last_active: Dict[str, str] = {}
+        self.has_memory = False
+        self.session_id = str(uuid.uuid4())
 
-    def reset(self, chat_id: str = None):
-        """Reset the chat session and clear memory"""
+    def reset(self, chat_id: str | None = None, *, clear_files: bool = False):
+        """
+        Reset chat(s)
+        - chat_id=None  -> reset ALL
+        - clear_files   -> delete uploaded files, used on full reset
+        """
         if chat_id:
-            # Reset specific chat
-            if chat_id in self.chat_history:
-                del self.chat_history[chat_id]
+            self.chat_history.pop(chat_id, None)
+            self.uploaded_files.pop(chat_id, None)
         else:
-            # Reset all chats
             self.chat_history = {}
-            # Generate new session ID only if resetting all chats
+            if clear_files:
+                self.uploaded_files = {}
             self.session_id = str(uuid.uuid4())
 
         self.has_memory = len(self.chat_history) > 0
@@ -33,25 +41,34 @@ class MemoryStore:
         """Create a new chat session and return the chat_id"""
         chat_id = str(uuid.uuid4())
         self.chat_history[chat_id] = []
+        self.uploaded_files[chat_id] = []  # แยกไฟล์ตาม session
+        self.chat_last_active[chat_id] = datetime.now().isoformat()  # 🆕
         return chat_id
 
+    # ───────────────────────── Chat / File ops ─────────────────────── #
     def add_chat(
-        self, question: str, answer: str, source: str = "", chat_id: str = None
+        self,
+        question: str,
+        answer: str,
+        source: str = "",
+        chat_id: str | None = None,
     ):
-        """Add a chat entry to the history"""
-        # If no chat_id provided, create a new one or use default
-        if not chat_id:
-            if not self.chat_history:
-                chat_id = self.create_chat()
-            else:
-                # Use the first available chat_id as default
-                chat_id = list(self.chat_history.keys())[0]
+        """บันทึก Q/A เข้า session และอัปเดตเวลาใช้งานล่าสุด"""
 
-        # Create chat if it doesn't exist
+        # 1) กำหนด chat_id ถ้าไม่ส่งมา
+        if chat_id is None:
+            chat_id = self.create_chat()  # สร้าง session ใหม่ (จะตั้ง dict ให้ครบ)
+
+        # 2) ตรวจให้แน่ใจว่ามีโครงสร้าง dict แล้ว
         if chat_id not in self.chat_history:
             self.chat_history[chat_id] = []
+        if chat_id not in self.uploaded_files:
+            self.uploaded_files[chat_id] = []
+        if chat_id not in self.chat_last_active:  # 🆕
+            self.chat_last_active[chat_id] = datetime.now().isoformat()
 
-        chat_entry = {
+        # 3) สร้าง entry
+        entry = {
             "id": str(uuid.uuid4()),
             "question": question,
             "answer": answer,
@@ -60,9 +77,13 @@ class MemoryStore:
             "chat_id": chat_id,
         }
 
-        self.chat_history[chat_id].append(chat_entry)
+        # 4) เก็บในประวัติ แล้วอัปเดต last_active
+        self.chat_history[chat_id].append(entry)
+        self.chat_last_active[chat_id] = entry["timestamp"]  # 🆕
+
+        # 5) ตั้ง flag memory
         self.has_memory = True
-        return chat_entry
+        return entry
 
     def get_chat_history(self, chat_id: str) -> List[Dict[str, Any]]:
         """Get chat history for a specific chat_id"""
@@ -79,6 +100,30 @@ class MemoryStore:
     def get_chat_sessions_count(self) -> int:
         """Get number of chat sessions"""
         return len(self.chat_history)
+
+        # -------------------------- file ops ---------------------------- #
+
+    def add_files(self, chat_id: str, files: List[Dict[str, Any]]):
+        if chat_id not in self.uploaded_files:
+            self.uploaded_files[chat_id] = []
+        self.uploaded_files[chat_id].extend(files)
+
+    def get_files(self, chat_id: str):
+        return self.uploaded_files.get(chat_id, [])
+
+    def delete_file(self, chat_id: str, file_id: str):
+        self.uploaded_files[chat_id] = [
+            f for f in self.uploaded_files.get(chat_id, []) if f["id"] != file_id
+        ]
+
+    def clear_files(self, chat_id: str):
+        self.uploaded_files[chat_id] = []
+
+        # 🆕 utility
+
+    def touch_chat(self, chat_id: str):
+        """Update last_active_time when user opens the chat (even without new message)"""
+        self.chat_last_active[chat_id] = datetime.now().isoformat()
 
 
 class ConnectionManager:
@@ -113,20 +158,34 @@ def mock_pdf_qa(question: str, uploaded_files: List[Dict]) -> tuple[str, str]:
 
     question_lower = question.lower()
 
+    # ------ 1) summary / summarize ------
     if "summary" in question_lower or "summarize" in question_lower:
         answer = (
             f"Based on the uploaded document(s), here's a summary: "
-            "The documents contain information relevant to your query. This is a mock response"
-            f"simulating content analysis from {len(uploaded_files)} uploaded file(s)."
+            "The documents contain information relevant to your query. "
+            "This is a mock response simulating content analysis from "
+            f"{len(uploaded_files)} uploaded file(s)."
         )
-        source = uploaded_files[0]["filename"] if uploaded_files else ""
-    elif "what" in question_lower or "how" in question_lower or "why" in question_lower:
+        source = (
+            f"Multiple sources ({len(uploaded_files)} files)"
+            if len(uploaded_files) > 1
+            else uploaded_files[0]["filename"]
+        )
+
+    # ------ 2) what / how / why ---------
+    elif any(k in question_lower for k in ("what", "how", "why")):
         answer = (
             f"According to the uploaded documents, here's what I found: {question} - "
             "This is a simulated response that would typically be generated by analyzing "
             "the PDF content using AI/LLM."
         )
-        source = uploaded_files[-1]["filename"] if uploaded_files else ""
+        source = (
+            f"Multiple sources ({len(uploaded_files)} files)"
+            if len(uploaded_files) > 1
+            else uploaded_files[-1]["filename"]
+        )
+
+    # ------ 3) อื่น ๆ  -------------------
     else:
         answer = (
             f"I found relevant information in your documents regarding: '{question}'. "
@@ -135,7 +194,7 @@ def mock_pdf_qa(question: str, uploaded_files: List[Dict]) -> tuple[str, str]:
         source = (
             f"Multiple sources ({len(uploaded_files)} files)"
             if len(uploaded_files) > 1
-            else (uploaded_files[0]["filename"] if uploaded_files else "")
+            else uploaded_files[0]["filename"]
         )
 
     return answer, source

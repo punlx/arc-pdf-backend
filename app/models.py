@@ -73,6 +73,7 @@ class ChatSummary(BaseModel):
     message_count: int
     first_question: str = None
     last_message_time: str = None
+    last_active_time: str | None = None
 
 
 class AllChatsResponse(BaseModel):
