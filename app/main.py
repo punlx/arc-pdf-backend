@@ -38,7 +38,10 @@ app = FastAPI(title="Backend API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",  # สำหรับพัฒนาในเครื่อง
+        "https://arc-pdf.onrender.com",  # Frontend production
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
