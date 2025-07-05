@@ -74,6 +74,7 @@ class ChatSummary(BaseModel):
     first_question: str = None
     last_message_time: str = None
     last_active_time: str | None = None
+    has_memory: Optional[bool] = False
 
 
 class AllChatsResponse(BaseModel):

@@ -202,7 +202,8 @@ async def get_all_chats():
                 message_count=len(messages),
                 first_question=first_question,
                 last_message_time=last_message_time,
-                last_active_time=last_active_time,  # 🆕
+                last_active_time=last_active_time,
+                has_memory=bool(messages),
             )
         )
 
