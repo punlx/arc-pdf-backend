@@ -53,15 +53,23 @@ async def root():
     return {"message": "Backend API", "version": "1.0.0"}
 
 
-@app.get("/api/status")
-async def get_status():
-    """Get current session status"""
+@app.get("/api/status", response_model=StatusResponse)
+async def get_status(chat_id: str = Query(..., description="Session chat_id to check")):
+    """
+    Get current session status for a specific chat_id
+    """
+
+    if chat_id not in memory.chat_history and chat_id not in memory.uploaded_files:
+        raise HTTPException(404, detail=f"Chat ID {chat_id} not found")
+    chat_messages = memory.chat_history.get(chat_id, [])
+    uploaded_files = memory.uploaded_files.get(chat_id, [])
+
     return StatusResponse(
-        has_memory=memory.has_memory,
+        has_memory=bool(chat_messages),
         session_id=memory.session_id,
-        uploaded_files_count=len(memory.uploaded_files),
-        chat_history_count=memory.get_total_chat_count(),
-        chat_sessions_count=memory.get_chat_sessions_count(),
+        uploaded_files_count=len(uploaded_files),
+        chat_history_count=len(chat_messages),
+        chat_sessions_count=1,
     )
 
 
